@@ -119,3 +119,6 @@ if (require.main === module) {
   module.exports = app; // Export for Electron to import
 }
 
+app.get('/', (req, res) => {
+  res.send('✅ Server is running!');
+});
