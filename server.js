@@ -1,3 +1,5 @@
+// ✅ Express backend for DiffChecker - Corrected Version
+
 const express = require('express');
 const cors = require('cors');
 const fileUpload = require('express-fileupload');
@@ -12,7 +14,7 @@ app.use(cors());
 app.use(express.json());
 app.use(fileUpload());
 
-// Improved function to extract amount
+// ✅ Extract amount from row
 function extractAmount(row) {
     const amountKey = Object.keys(row).find(k =>
         (k.toLowerCase().includes('amount') && k.toLowerCase().includes('inr')) ||
@@ -24,7 +26,7 @@ function extractAmount(row) {
     return parseFloat(raw).toFixed(2);
 }
 
-// Improved function to extract UTR
+// ✅ Extract UTR from row
 function extractUTR(row) {
     const utrKey = Object.keys(row).find(k =>
         k.toLowerCase().includes('description') ||
@@ -33,13 +35,12 @@ function extractUTR(row) {
         k.toLowerCase().includes('utr')
     );
     if (!utrKey || !row[utrKey]) return null;
-
     const str = row[utrKey].toString();
-    const match = str.match(/\b[A-Z0-9]{10,}\b/); // Alphanumeric UTRs with at least 10 characters
+    const match = str.match(/\b(?:\d{12,}|[A-Z0-9]{10,})\b/gi);
     return match ? match[0] : null;
 }
 
-// Comparison function
+// ✅ Compare input and bank files
 function compareStatements(inputPath, bankPath) {
     const inputWorkbook = xlsx.readFile(inputPath);
     const bankWorkbook = xlsx.readFile(bankPath);
@@ -63,15 +64,16 @@ function compareStatements(inputPath, bankPath) {
 
     inputMap.forEach((inputRow, utr) => {
         const bankRow = bankMap.get(utr);
-        const userId = inputRow['User Id'] || 'N/A';
+        const rawUserId = inputRow['User Id'] || 'N/A';
+        const userId = typeof rawUserId === 'number' ? `'${rawUserId}'` : rawUserId;
         const updatedAmount = parseFloat(inputRow['Updated Amount'] || 0).toFixed(2);
 
         if (!bankRow) {
-            result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Missing in Bank', 'Amount': '', 'Mismatched Amount': updatedAmount });
+            result.push({ 'User Id': userId, 'UTR': `'${utr}` , 'Status': 'Missing in Bank', 'Amount': '', 'Mismatched Amount': updatedAmount });
         } else {
             const bankAmount = extractAmount(bankRow);
             if (updatedAmount !== bankAmount) {
-                result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Amount Mismatch', 'Amount': bankAmount, 'Mismatched Amount': updatedAmount });
+                result.push({ 'User Id': userId, 'UTR': `'${utr}` , 'Status': 'Amount Mismatch', 'Amount': bankAmount, 'Mismatched Amount': updatedAmount });
             }
         }
     });
@@ -79,7 +81,7 @@ function compareStatements(inputPath, bankPath) {
     bankMap.forEach((bankRow, utr) => {
         if (!inputMap.has(utr)) {
             const bankAmount = extractAmount(bankRow);
-            result.push({ 'User Id': '', 'UTR': "'" + utr, 'Status': 'Excess in Bank', 'Amount': bankAmount, 'Mismatched Amount': '' });
+            result.push({ 'User Id': '', 'UTR': `'${utr}` , 'Status': 'Excess in Bank', 'Amount': bankAmount, 'Mismatched Amount': '' });
         }
     });
 
@@ -92,7 +94,7 @@ function compareStatements(inputPath, bankPath) {
     return outputPath;
 }
 
-// Upload endpoint
+// ✅ Upload endpoint
 app.post('/upload', (req, res) => {
     if (!req.files || !req.files.input || !req.files.bank) {
         return res.status(400).send('Missing files');
@@ -118,12 +120,12 @@ app.post('/upload', (req, res) => {
     });
 });
 
-// Health check
+// ✅ Health check
 app.get('/', (req, res) => {
     res.send('✅ Server is running!');
 });
 
-// Start server
+// ✅ Start server
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
