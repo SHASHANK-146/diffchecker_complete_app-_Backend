@@ -12,144 +12,116 @@ app.use(cors());
 app.use(express.json());
 app.use(fileUpload());
 
-// Extract updated amount from input row
 function extractAmount(row) {
-    const amountKey = Object.keys(row).find(k =>
-        (k.toLowerCase().includes('amount') && k.toLowerCase().includes('inr')) ||
-        k.toLowerCase().includes('deposits') ||
-        k.toLowerCase().includes('amount')
-    );
-    if (!amountKey || !row[amountKey]) return '0.00';
-    const raw = row[amountKey].toString().replace(/,/g, '');
-    return parseFloat(raw).toFixed(2);
+  const amountKey = Object.keys(row).find(k =>
+    k.toLowerCase().includes('amount') ||
+    k.toLowerCase().includes('inr') ||
+    k.toLowerCase().includes('deposit')
+  );
+  if (!amountKey || !row[amountKey]) return '0.00';
+  const raw = row[amountKey].toString().replace(/,/g, '');
+  return parseFloat(raw).toFixed(2);
 }
 
-// Extract UTR from row description
 function extractUTR(row) {
-    const utrKey = Object.keys(row).find(k =>
-        k.toLowerCase().includes('description') ||
-        k.toLowerCase().includes('tracking') ||
-        k.toLowerCase().includes('narration') ||
-        k.toLowerCase().includes('utr')
-    );
-    if (!utrKey || !row[utrKey]) return null;
-
-    const str = row[utrKey].toString();
-    const match = str.match(/\b[A-Z0-9]{10,}\b/); // Extract alphanumeric UTR
-    return match ? match[0] : null;
-}
-
-// Format long numbers as text
-function formatAsText(value) {
-    if (!value) return '';
-    return `'${value.toString()}`;
+  const utrKey = Object.keys(row).find(k =>
+    k.toLowerCase().includes('description') ||
+    k.toLowerCase().includes('narration') ||
+    k.toLowerCase().includes('utr') ||
+    k.toLowerCase().includes('ref') ||
+    k.toLowerCase().includes('tracking')
+  );
+  if (!utrKey || !row[utrKey]) return null;
+  const str = row[utrKey].toString();
+  const match = str.match(/\b[A-Z0-9]{10,}\b/);
+  return match ? match[0] : null;
 }
 
 function compareStatements(inputPath, bankPath) {
-    const inputWorkbook = xlsx.readFile(inputPath);
-    const bankWorkbook = xlsx.readFile(bankPath);
+  const inputWorkbook = xlsx.readFile(inputPath);
+  const bankWorkbook = xlsx.readFile(bankPath);
+  const inputData = xlsx.utils.sheet_to_json(inputWorkbook.Sheets[inputWorkbook.SheetNames[0]]);
+  const bankData = xlsx.utils.sheet_to_json(bankWorkbook.Sheets[bankWorkbook.SheetNames[0]]);
 
-    const inputData = xlsx.utils.sheet_to_json(inputWorkbook.Sheets[inputWorkbook.SheetNames[0]]);
-    const bankData = xlsx.utils.sheet_to_json(bankWorkbook.Sheets[bankWorkbook.SheetNames[0]]);
+  const inputMap = new Map();
+  inputData.forEach(row => {
+    const utr = row.Utr || extractUTR(row);
+    if (utr) inputMap.set(utr, row);
+  });
 
-    const inputMap = new Map();
-    inputData.forEach(row => {
-        const utr = row.Utr || extractUTR(row);
-        if (utr) inputMap.set(utr, row);
-    });
+  const bankMap = new Map();
+  bankData.forEach(row => {
+    const utr = extractUTR(row);
+    if (utr) bankMap.set(utr, row);
+  });
 
-    const bankMap = new Map();
-    bankData.forEach(row => {
-        const utr = extractUTR(row);
-        if (utr) bankMap.set(utr, row);
-    });
+  const result = [];
 
-    const result = [];
+  inputMap.forEach((inputRow, utr) => {
+    const bankRow = bankMap.get(utr);
+    const userId = inputRow['User Id'] || 'N/A';
+    const updatedAmount = parseFloat(inputRow['Updated Amount'] || 0).toFixed(2);
 
-    inputMap.forEach((inputRow, utr) => {
-        const bankRow = bankMap.get(utr);
-        const userId = inputRow['User Id'] || 'N/A';
-        const updatedAmount = parseFloat(inputRow['Updated Amount'] || 0).toFixed(2);
+    if (!bankRow) {
+      result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Missing in Bank', 'Amount': '', 'Mismatched Amount': updatedAmount });
+    } else {
+      const bankAmount = extractAmount(bankRow);
+      if (updatedAmount !== bankAmount) {
+        result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Amount Mismatch', 'Amount': bankAmount, 'Mismatched Amount': updatedAmount });
+      }
+    }
+  });
 
-        if (!bankRow) {
-            result.push({
-                'User Id': formatAsText(userId),
-                'UTR': formatAsText(utr),
-                'Status': 'Missing in Bank',
-                'Amount': '',
-                'Mismatched Amount': updatedAmount
-            });
-        } else {
-            const bankAmount = extractAmount(bankRow);
-            if (updatedAmount !== bankAmount) {
-                result.push({
-                    'User Id': formatAsText(userId),
-                    'UTR': formatAsText(utr),
-                    'Status': 'Amount Mismatch',
-                    'Amount': bankAmount,
-                    'Mismatched Amount': updatedAmount
-                });
-            }
-        }
-    });
+  bankMap.forEach((bankRow, utr) => {
+    if (!inputMap.has(utr)) {
+      const bankAmount = extractAmount(bankRow);
+      result.push({ 'User Id': '', 'UTR': "'" + utr, 'Status': 'Excess in Bank', 'Amount': bankAmount, 'Mismatched Amount': '' });
+    }
+  });
 
-    bankMap.forEach((bankRow, utr) => {
-        if (!inputMap.has(utr)) {
-            const bankAmount = extractAmount(bankRow);
-            result.push({
-                'User Id': '',
-                'UTR': formatAsText(utr),
-                'Status': 'Excess in Bank',
-                'Amount': bankAmount,
-                'Mismatched Amount': ''
-            });
-        }
-    });
+  const outputSheet = xlsx.utils.json_to_sheet(result);
+  const outputWorkbook = xlsx.utils.book_new();
+  xlsx.utils.book_append_sheet(outputWorkbook, outputSheet, 'Comparison');
 
-    const outputSheet = xlsx.utils.json_to_sheet(result);
-    const outputWorkbook = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(outputWorkbook, outputSheet, 'Comparison');
-
-    const outputPath = path.join(__dirname, 'comparison_output.xlsx');
-    xlsx.writeFile(outputWorkbook, outputPath);
-    return outputPath;
+  const outputPath = path.join(__dirname, 'comparison_output.xlsx');
+  xlsx.writeFile(outputWorkbook, outputPath);
+  return outputPath;
 }
 
-// File upload endpoint
-app.post('/upload', (req, res) => {
+app.post('/upload', async (req, res) => {
+  try {
     if (!req.files || !req.files.input || !req.files.bank) {
-        return res.status(400).send('Missing files');
+      console.log("❌ Missing files");
+      return res.status(400).send('Missing files');
     }
 
     const inputPath = path.join(__dirname, req.files.input.name);
     const bankPath = path.join(__dirname, req.files.bank.name);
 
-    req.files.input.mv(inputPath, err => {
-        if (err) return res.status(500).send(err);
+    await req.files.input.mv(inputPath);
+    await req.files.bank.mv(bankPath);
 
-        req.files.bank.mv(bankPath, err2 => {
-            if (err2) return res.status(500).send(err2);
+    const outputFilePath = compareStatements(inputPath, bankPath);
 
-            const outputFilePath = compareStatements(inputPath, bankPath);
-
-            res.download(outputFilePath, 'comparison_output.xlsx', () => {
-                fs.unlinkSync(inputPath);
-                fs.unlinkSync(bankPath);
-                fs.unlinkSync(outputFilePath);
-            });
-        });
+    res.download(outputFilePath, 'comparison_output.xlsx', () => {
+      fs.unlinkSync(inputPath);
+      fs.unlinkSync(bankPath);
+      fs.unlinkSync(outputFilePath);
     });
+  } catch (err) {
+    console.error("🔥 Upload error:", err);
+    res.status(500).send('Server error during upload');
+  }
 });
 
-// Health check
 app.get('/', (req, res) => {
-    res.send('✅ Server is running!');
+  res.send('✅ Server is running!');
 });
 
 if (require.main === module) {
-    app.listen(PORT, () => {
-        console.log(`🚀 Server running on http://localhost:${PORT}`);
-    });
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  });
 } else {
-    module.exports = app;
+  module.exports = app;
 }
