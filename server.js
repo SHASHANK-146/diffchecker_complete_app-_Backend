@@ -6,122 +6,108 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
 app.use(fileUpload());
 
 function extractAmount(row) {
-  const amountKey = Object.keys(row).find(k =>
-    k.toLowerCase().includes('amount') ||
-    k.toLowerCase().includes('inr') ||
-    k.toLowerCase().includes('deposit')
-  );
-  if (!amountKey || !row[amountKey]) return '0.00';
-  const raw = row[amountKey].toString().replace(/,/g, '');
-  return parseFloat(raw).toFixed(2);
+    const key = Object.keys(row).find(k =>
+        k.toLowerCase().includes('amount') || k.toLowerCase().includes('deposit')
+    );
+    if (!key || !row[key]) return '0.00';
+    return parseFloat(row[key].toString().replace(/,/g, '')).toFixed(2);
 }
 
 function extractUTR(row) {
-  const utrKey = Object.keys(row).find(k =>
-    k.toLowerCase().includes('description') ||
-    k.toLowerCase().includes('narration') ||
-    k.toLowerCase().includes('utr') ||
-    k.toLowerCase().includes('ref') ||
-    k.toLowerCase().includes('tracking')
-  );
-  if (!utrKey || !row[utrKey]) return null;
-  const str = row[utrKey].toString();
-  const match = str.match(/\b[A-Z0-9]{10,}\b/);
-  return match ? match[0] : null;
+    const key = Object.keys(row).find(k =>
+        k.toLowerCase().includes('utr') || k.toLowerCase().includes('narration') || k.toLowerCase().includes('description')
+    );
+    if (!key || !row[key]) return null;
+    const match = row[key].toString().match(/\b[A-Z0-9]{10,}\b/);
+    return match ? match[0] : null;
 }
 
 function compareStatements(inputPath, bankPath) {
-  const inputWorkbook = xlsx.readFile(inputPath);
-  const bankWorkbook = xlsx.readFile(bankPath);
-  const inputData = xlsx.utils.sheet_to_json(inputWorkbook.Sheets[inputWorkbook.SheetNames[0]]);
-  const bankData = xlsx.utils.sheet_to_json(bankWorkbook.Sheets[bankWorkbook.SheetNames[0]]);
+    const input = xlsx.utils.sheet_to_json(xlsx.readFile(inputPath).Sheets['Sheet1']);
+    const bank = xlsx.utils.sheet_to_json(xlsx.readFile(bankPath).Sheets['Sheet1']);
 
-  const inputMap = new Map();
-  inputData.forEach(row => {
-    const utr = row.Utr || extractUTR(row);
-    if (utr) inputMap.set(utr, row);
-  });
+    const inputMap = new Map();
+    const bankMap = new Map();
 
-  const bankMap = new Map();
-  bankData.forEach(row => {
-    const utr = extractUTR(row);
-    if (utr) bankMap.set(utr, row);
-  });
+    input.forEach(row => {
+        const utr = row.Utr || extractUTR(row);
+        if (utr) inputMap.set(utr, row);
+    });
 
-  const result = [];
+    bank.forEach(row => {
+        const utr = extractUTR(row);
+        if (utr) bankMap.set(utr, row);
+    });
 
-  inputMap.forEach((inputRow, utr) => {
-    const bankRow = bankMap.get(utr);
-    const userId = inputRow['User Id'] || 'N/A';
-    const updatedAmount = parseFloat(inputRow['Updated Amount'] || 0).toFixed(2);
+    const result = [];
 
-    if (!bankRow) {
-      result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Missing in Bank', 'Amount': '', 'Mismatched Amount': updatedAmount });
-    } else {
-      const bankAmount = extractAmount(bankRow);
-      if (updatedAmount !== bankAmount) {
-        result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Amount Mismatch', 'Amount': bankAmount, 'Mismatched Amount': updatedAmount });
-      }
-    }
-  });
+    inputMap.forEach((inputRow, utr) => {
+        const bankRow = bankMap.get(utr);
+        const userId = inputRow['User Id'] || '';
+        const updatedAmount = parseFloat(inputRow['Updated Amount'] || 0).toFixed(2);
 
-  bankMap.forEach((bankRow, utr) => {
-    if (!inputMap.has(utr)) {
-      const bankAmount = extractAmount(bankRow);
-      result.push({ 'User Id': '', 'UTR': "'" + utr, 'Status': 'Excess in Bank', 'Amount': bankAmount, 'Mismatched Amount': '' });
-    }
-  });
+        if (!bankRow) {
+            result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Missing in Bank', 'Amount': '', 'Mismatched Amount': updatedAmount });
+        } else {
+            const bankAmount = extractAmount(bankRow);
+            if (updatedAmount !== bankAmount) {
+                result.push({ 'User Id': userId, 'UTR': "'" + utr, 'Status': 'Amount Mismatch', 'Amount': bankAmount, 'Mismatched Amount': updatedAmount });
+            }
+        }
+    });
 
-  const outputSheet = xlsx.utils.json_to_sheet(result);
-  const outputWorkbook = xlsx.utils.book_new();
-  xlsx.utils.book_append_sheet(outputWorkbook, outputSheet, 'Comparison');
+    bankMap.forEach((bankRow, utr) => {
+        if (!inputMap.has(utr)) {
+            const bankAmount = extractAmount(bankRow);
+            result.push({ 'User Id': '', 'UTR': "'" + utr, 'Status': 'Excess in Bank', 'Amount': bankAmount, 'Mismatched Amount': '' });
+        }
+    });
 
-  const outputPath = path.join(__dirname, 'comparison_output.xlsx');
-  xlsx.writeFile(outputWorkbook, outputPath);
-  return outputPath;
+    const outputSheet = xlsx.utils.json_to_sheet(result);
+    const outputWb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(outputWb, outputSheet, 'Comparison');
+
+    const outputPath = path.join(__dirname, 'comparison_output.xlsx');
+    xlsx.writeFile(outputWb, outputPath);
+    return outputPath;
 }
 
-app.post('/upload', async (req, res) => {
-  try {
+app.post('/upload', (req, res) => {
     if (!req.files || !req.files.input || !req.files.bank) {
-      console.log("❌ Missing files");
-      return res.status(400).send('Missing files');
+        return res.status(400).send('❌ Files missing');
     }
 
     const inputPath = path.join(__dirname, req.files.input.name);
     const bankPath = path.join(__dirname, req.files.bank.name);
 
-    await req.files.input.mv(inputPath);
-    await req.files.bank.mv(bankPath);
+    req.files.input.mv(inputPath, err => {
+        if (err) return res.status(500).send('❌ Error saving input file');
 
-    const outputFilePath = compareStatements(inputPath, bankPath);
+        req.files.bank.mv(bankPath, err2 => {
+            if (err2) return res.status(500).send('❌ Error saving bank file');
 
-    res.download(outputFilePath, 'comparison_output.xlsx', () => {
-      fs.unlinkSync(inputPath);
-      fs.unlinkSync(bankPath);
-      fs.unlinkSync(outputFilePath);
+            const outputPath = compareStatements(inputPath, bankPath);
+
+            res.download(outputPath, 'comparison_output.xlsx', () => {
+                fs.unlinkSync(inputPath);
+                fs.unlinkSync(bankPath);
+                fs.unlinkSync(outputPath);
+            });
+        });
     });
-  } catch (err) {
-    console.error("🔥 Upload error:", err);
-    res.status(500).send('Server error during upload');
-  }
 });
 
 app.get('/', (req, res) => {
-  res.send('✅ Server is running!');
+    res.send('✅ Backend running!');
 });
 
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-  });
-} else {
-  module.exports = app;
-}
+app.listen(PORT, () => {
+    console.log(`✅ Server running at http://localhost:${PORT}`);
+});
